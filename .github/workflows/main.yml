@@ -14,10 +14,34 @@ jobs:
 
       - name: Set Root Password
         run: |
+          set -e
           echo "root:root" | sudo chpasswd
-          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo service ssh restart
+
+          # Don't rely on matching existing lines with sed (fails silently if the
+          # line doesn't exist in this exact form). Force the values instead.
+          sudo sed -i '/^PermitRootLogin/d; /^#PermitRootLogin/d' /etc/ssh/sshd_config
+          sudo sed -i '/^PasswordAuthentication/d; /^#PasswordAuthentication/d' /etc/ssh/sshd_config
+          echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
+          echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
+
+          # Ubuntu 22.04 often has an Include for /etc/ssh/sshd_config.d/*.conf
+          # which can silently override the above. Neutralize any conflicting
+          # drop-in files (e.g. 50-cloud-init.conf disables password auth).
+          if [ -d /etc/ssh/sshd_config.d ]; then
+            sudo sed -i '/^PermitRootLogin/d; /^PasswordAuthentication/d' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+          fi
+
+          # Make sure sshd is actually installed/enabled (some runner images
+          # ship it stopped or masked).
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+
+          echo "---- Effective sshd config (verifying it actually applied) ----"
+          sudo sshd -T | grep -Ei 'permitrootlogin|passwordauthentication'
+          echo "---- sshd service status ----"
+          sudo systemctl status ssh --no-pager | head -10
 
       - name: Pre-install Node.js, Git, Zip, and Claude Code
         run: |
@@ -26,6 +50,14 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
           sudo apt-get install -y nodejs
           sudo npm install -g @anthropic-ai/claude-code
+
+      - name: Verify SSH Works Locally (before exposing via ngrok)
+        run: |
+          set -e
+          sudo apt-get install -y sshpass
+          echo "Testing local SSH login as root..."
+          sshpass -p 'root' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost "echo LOCAL_SSH_OK"
+          echo "If you see LOCAL_SSH_OK above, sshd itself is fine and the issue (if any) is ngrok-side."
 
       - name: Install Cloudflared & Setup Tunnel
         env:
