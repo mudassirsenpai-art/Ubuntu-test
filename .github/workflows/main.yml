@@ -152,6 +152,18 @@ jobs:
           echo ""
           echo " Password  : root"
           echo "============================================="
+          echo ""
+          echo " ngrok account/region info from API:"
+          curl -s http://localhost:4040/api/tunnels | jq '.'
+          echo ""
+          echo " Full ngrok.log so far:"
+          cat ngrok.log
+
+      - name: Live-tail ngrok log for 3 minutes (watch this while you try connecting from Termux NOW)
+        run: |
+          echo "You have 3 minutes. Try 'ssh root@<host> -p <port>' from Termux RIGHT NOW."
+          echo "Any connection attempt/error will appear below in real time:"
+          timeout 180 tail -f ngrok.log || true
 
       - name: Keep Session Alive for 6 Hours
         run: sleep 21600
