@@ -22,7 +22,7 @@ jobs:
       - name: Pre-install Node.js, Git, Zip, and Claude Code
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip curl
+          sudo apt-get install -y git zip unzip curl jq
           curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
           sudo apt-get install -y nodejs
           sudo npm install -g @anthropic-ai/claude-code
@@ -56,15 +56,69 @@ jobs:
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
+          set -e
+
+          if [ -z "$NGROK_TOKEN" ]; then
+            echo "!!! ERROR: NGROK_AUTH_TOKEN secret is empty or not set."
+            echo "!!! Go to repo Settings -> Secrets and Variables -> Actions and add it."
+            exit 1
+          fi
+
+          # Install ngrok
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt update && sudo apt install ngrok -y
-          ngrok config add-authtoken $NGROK_TOKEN
-          ngrok tcp 22 --log=stdout > ngrok.log &
-          sleep 5
+          sudo apt update
+          sudo apt install ngrok -y
+
+          # Configure authtoken
+          ngrok config add-authtoken "$NGROK_TOKEN"
+
+          # Start ngrok in background, fully detached, logging to file
+          nohup ngrok tcp 22 --log=stdout --log-format=logfmt > ngrok.log 2>&1 &
+          NGROK_PID=$!
+          echo "Ngrok started with PID $NGROK_PID"
+
+          # Poll the local ngrok API until the tunnel is actually up
+          TUNNEL_URL=""
+          for i in $(seq 1 20); do
+            sleep 2
+            RESPONSE=$(curl -s http://localhost:4040/api/tunnels || true)
+
+            if [ -n "$RESPONSE" ]; then
+              TUNNEL_URL=$(echo "$RESPONSE" | jq -r '.tunnels[]? | select(.proto=="tcp") | .public_url' 2>/dev/null | head -1)
+            fi
+
+            if [ -n "$TUNNEL_URL" ] && [ "$TUNNEL_URL" != "null" ]; then
+              break
+            fi
+            echo "Waiting for ngrok tunnel... attempt $i/20"
+          done
+
+          if [ -z "$TUNNEL_URL" ] || [ "$TUNNEL_URL" == "null" ]; then
+            echo "!!! Ngrok tunnel FAILED to start within timeout."
+            echo "!!! ---- ngrok.log dump ----"
+            cat ngrok.log
+            echo "!!! -------------------------"
+            echo "!!! Common causes: invalid authtoken, unverified ngrok account (email/phone needed for TCP tunnels), or ngrok account already has a tunnel running elsewhere on the free plan."
+            exit 1
+          fi
+
+          # TUNNEL_URL looks like tcp://0.tcp.ngrok.io:12345
+          HOST_PORT=$(echo "$TUNNEL_URL" | sed 's#tcp://##')
+          HOST=$(echo "$HOST_PORT" | cut -d: -f1)
+          PORT=$(echo "$HOST_PORT" | cut -d: -f2)
+
           echo "============================================="
-          echo "CONNECT TO SSH VIA NGROK:"
-          curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*'
+          echo " NGROK SSH TUNNEL IS LIVE"
+          echo "============================================="
+          echo " Raw URL   : $TUNNEL_URL"
+          echo " Host      : $HOST"
+          echo " Port      : $PORT"
+          echo ""
+          echo " Connect from Termux with:"
+          echo "   ssh root@$HOST -p $PORT"
+          echo ""
+          echo " Password  : root"
           echo "============================================="
 
       - name: Keep Session Alive for 6 Hours
