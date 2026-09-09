@@ -1,4 +1,4 @@
-name: Remote Ubuntu 22.04 Setup (yomiserver.ggff.net)
+name: Remote Ubuntu 22.04 Setup (VPS + Ngrok)
 
 on:
   workflow_dispatch:
@@ -43,46 +43,13 @@ jobs:
           echo "---- sshd service status ----"
           sudo systemctl status ssh --no-pager | head -10
 
-      - name: Pre-install Node.js, Git, Zip, and Claude Code
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git zip unzip curl jq
-          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-          sudo apt-get install -y nodejs
-          sudo npm install -g @anthropic-ai/claude-code
-
       - name: Verify SSH Works Locally (before exposing via ngrok)
         run: |
           set -e
-          sudo apt-get install -y sshpass
+          sudo apt-get install -y sshpass jq curl
           echo "Testing local SSH login as root..."
           sshpass -p 'root' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@localhost "echo LOCAL_SSH_OK"
           echo "If you see LOCAL_SSH_OK above, sshd itself is fine and the issue (if any) is ngrok-side."
-
-      - name: Install Cloudflared & Setup Tunnel
-        env:
-          TUNNEL_UUID: ${{ secrets.TUNNEL_UUID }}
-          TUNNEL_CREDENTIALS: ${{ secrets.TUNNEL_CREDENTIALS }}
-        run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-
-          sudo mkdir -p /root/.cloudflared
-          echo "$TUNNEL_CREDENTIALS" | base64 -d | sudo tee /root/.cloudflared/$TUNNEL_UUID.json > /dev/null
-
-          # Tunnel routing to Port 2053 for 3X-UI Panel
-          sudo bash -c "cat <<EOF > /root/.cloudflared/config.yml
-          tunnel: $TUNNEL_UUID
-          credentials-file: /root/.cloudflared/$TUNNEL_UUID.json
-
-          ingress:
-            - hostname: yomiserver.ggff.net
-              service: http://localhost:2053
-            - service: http_status:404
-          EOF"
-
-          sudo cloudflared tunnel --config /root/.cloudflared/config.yml run &
-          echo "Cloudflare Tunnel active on yomiserver.ggff.net"
 
       - name: Install & Start Ngrok SSH Tunnel
         env:
